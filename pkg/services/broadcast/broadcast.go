@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/Joseph-Maulin/go-yt-inference-engine/pkg/services/stream"
-	"gocv.io/x/gocv"
 )
 
 const (
@@ -22,7 +21,6 @@ const (
 type Broadcast struct {
 	YoutubeURL string
 	Port       int
-	frameChan  <-chan *gocv.Mat
 	cancel     context.CancelFunc
 	ctx        context.Context
 }
@@ -110,6 +108,9 @@ func (b *BroadcastService) broadcastLoop(broadcast *Broadcast) error {
 
 	// Wait for context cancellation
 	<-broadcast.ctx.Done()
+	if err := b.StreamService.RemoveYouTubeStream(broadcast.YoutubeURL); err != nil {
+		return fmt.Errorf("failed to stop YouTube stream: %w", err)
+	}
 	log.Printf("Stopped broadcast for %s on port %d", broadcast.YoutubeURL, broadcast.Port)
 	return nil
 }
@@ -127,19 +128,16 @@ func (b *BroadcastService) StartBroadcast(youtubeURL string) error {
 		return fmt.Errorf("start broadcast failed to get next port: %w", err)
 	}
 
-	frameChan, err := b.StreamService.GetFrameChannel(youtubeURL)
-	if err != nil {
-		return fmt.Errorf("start broadcast failed to get frame channel: %w", err)
+	if err := b.StreamService.AddYouTubeStream(youtubeURL); err != nil {
+		return fmt.Errorf("start broadcast failed to start YouTube stream: %w", err)
 	}
 
-	// Note: We don't create a UDP listener here since ffmpeg handles UDP sending
 	ctx, cancel := context.WithCancel(context.Background())
 	broadcast := &Broadcast{
 		YoutubeURL: youtubeURL,
 		Port:       port,
 		cancel:     cancel,
 		ctx:        ctx,
-		frameChan:  frameChan,
 	}
 	b.broadcasts[youtubeURL] = broadcast
 

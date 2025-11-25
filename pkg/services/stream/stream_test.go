@@ -12,22 +12,10 @@ const (
 
 func TestStreamService(t *testing.T) {
 	streamService := NewStream()
-	defer streamService.Close()
 
 	assert.NotNil(t, streamService)
 
-	err := streamService.StartYouTubeStream(testYouTubeURL)
+	err := streamService.AddYouTubeStream(testYouTubeURL)
 	assert.NoError(t, err)
-	defer streamService.StopYouTubeStream(testYouTubeURL)
-
-	frameChan, err := streamService.GetFrameChannel(testYouTubeURL)
-	assert.NoError(t, err)
-	assert.NotNil(t, frameChan)
-
-	frame := <-frameChan
-	assert.NotNil(t, frame)
-
-	assert.False(t, frame.Empty())
-	t.Logf("Received frame from YouTube stream; shape=%v, type=%v", frame.Size(), frame.Type())
-	frame.Close()
+	defer streamService.RemoveYouTubeStream(testYouTubeURL)
 }

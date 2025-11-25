@@ -13,7 +13,6 @@ const (
 
 func TestGetM3U8StreamURL(t *testing.T) {
 	ytStream, err := NewYouTubeStream(testYouTubeURL)
-	defer ytStream.Stop()
 
 	assert.NoError(t, err)
 	assert.NotNil(t, ytStream)

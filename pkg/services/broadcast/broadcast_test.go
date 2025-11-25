@@ -15,19 +15,14 @@ const (
 func TestBroadcastService(t *testing.T) {
 
 	streamService := stream.NewStream()
-	defer streamService.Close()
 
 	broadcastService := NewBroadcastService(streamService)
 	defer broadcastService.Close()
 
 	assert.NotNil(t, broadcastService)
 
-	// Start YouTube stream FIRST
-	err := streamService.StartYouTubeStream(testYouTubeURL)
-	assert.NoError(t, err)
-
 	// Now start the broadcast
-	err = broadcastService.StartBroadcast(testYouTubeURL)
+	err := broadcastService.StartBroadcast(testYouTubeURL)
 	assert.NoError(t, err)
 
 	// Verify broadcast was created
