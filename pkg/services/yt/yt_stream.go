@@ -19,7 +19,6 @@ type YouTubeStream struct {
 	YouTubeURL    string
 	M3U8StreamURL string
 	FrameChan     chan *gocv.Mat
-	stopChan      chan struct{}
 	ctx           context.Context
 	cancel        context.CancelFunc
 }
@@ -78,7 +77,6 @@ func NewYouTubeStream(youTubeURL string) (*YouTubeStream, error) {
 		YouTubeURL:    youTubeURL,
 		M3U8StreamURL: m3u8StreamURL,
 		FrameChan:     make(chan *gocv.Mat, 100),
-		stopChan:      make(chan struct{}),
 		ctx:           ctx,
 		cancel:        cancel,
 	}, nil
@@ -128,6 +126,7 @@ func (y *YouTubeStream) Start() error {
 					continue
 				case <-y.ctx.Done():
 					log.Println("Stopping YouTube stream")
+					frameCopy.Close()
 					return
 				}
 
@@ -141,7 +140,6 @@ func (y *YouTubeStream) Start() error {
 func (y *YouTubeStream) Stop() {
 	log.Printf("Stopping YouTube stream: %s", y.YouTubeURL)
 	y.cancel()
-	close(y.stopChan)
 	log.Printf("YouTube stream stopped successfully: %s", y.YouTubeURL)
 }
 
