@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -21,7 +23,6 @@ type Broadcast struct {
 	YoutubeURL string
 	Port       int
 	frameChan  <-chan *gocv.Mat
-	conn       *net.UDPConn
 	cancel     context.CancelFunc
 	ctx        context.Context
 }
@@ -33,9 +34,8 @@ type BroadcastService struct {
 	mu         sync.RWMutex
 }
 
+// Lock the BroadcastService mutex before calling this function
 func (b *BroadcastService) getNextPort() (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if len(b.broadcasts) >= maximumBroadcastStreams+1 {
 		return 0, fmt.Errorf("maximum number of broadcasts reached")
 	}
@@ -67,92 +67,51 @@ func NewBroadcastService(streamService *stream.StreamService) *BroadcastService 
 }
 
 func (b *BroadcastService) broadcastLoop(broadcast *Broadcast) error {
-	defer broadcast.conn.Close()
+	// Get the M3U8 URL from the YouTube stream
+	b.mu.RLock()
+	ytStream, exists := b.StreamService.YouTubeStreams[broadcast.YoutubeURL]
+	b.mu.RUnlock()
 
-	clients := make(map[string]*net.UDPAddr)
-	var clientMutex sync.RWMutex
+	if !exists {
+		return fmt.Errorf("failed to get YouTube stream for %s", broadcast.YoutubeURL)
+	}
+	m3u8URL := ytStream.M3U8StreamURL
 
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			select {
-			case <-broadcast.ctx.Done():
-				log.Printf("Broadcast context done, stopping client listener; youtubeURL=%s\n", broadcast.YoutubeURL)
-				return
-			default:
-				n, addr, err := broadcast.conn.ReadFromUDP(buf)
-				if err != nil {
-					broadcast.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	log.Printf("Starting direct M3U8->UDP stream for %s", broadcast.YoutubeURL)
 
-					if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
-						continue
-					}
-					log.Printf("Error reading from UDP for client listener; youtubeURL=%s, error=%v", broadcast.YoutubeURL, err)
-					continue
-				}
-				broadcast.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-				msg_rcvd := string(buf[:n])
-				switch msg_rcvd {
-				case "CONNECT":
-					clientMutex.Lock()
-					clients[addr.String()] = addr
-					clientMutex.Unlock()
-					log.Printf("Client connected; youtubeURL=%s, client=%s", broadcast.YoutubeURL, addr.String())
-				case "DISCONNECT":
-					clientMutex.Lock()
-					delete(clients, addr.String())
-					clientMutex.Unlock()
-					log.Printf("Client disconnected; youtubeURL=%s, client=%s", broadcast.YoutubeURL, addr.String())
-				default:
-					log.Printf("Unknown message received from client listener; youtubeURL=%s, message=%s", broadcast.YoutubeURL, msg_rcvd)
-				}
-			}
+	// Use ffmpeg to directly transcode M3U8 to UDP (much faster than GoCV pipeline)
+	// This bypasses frame processing but ensures smooth playback
+	ffmpegCmd := exec.Command("ffmpeg",
+		"-i", m3u8URL,
+		"-c:v", "copy", // Copy video codec (no re-encoding!)
+		"-c:a", "copy", // Copy audio codec if present
+		"-f", "mpegts",
+		"-flush_packets", "1",
+		"-fflags", "nobuffer",
+		fmt.Sprintf("udp://127.0.0.1:%d?pkt_size=1316", broadcast.Port),
+	)
+
+	// Capture stderr for debugging
+	ffmpegCmd.Stderr = os.Stderr
+
+	if err := ffmpegCmd.Start(); err != nil {
+		return fmt.Errorf("failed to start ffmpeg: %w", err)
+	}
+
+	defer func() {
+		log.Printf("Cleaning up ffmpeg for %s", broadcast.YoutubeURL)
+		if ffmpegCmd.Process != nil {
+			ffmpegCmd.Process.Kill()
 		}
+		ffmpegCmd.Wait()
+		time.Sleep(100 * time.Millisecond)
+		log.Printf("Cleaned up ffmpeg for %s", broadcast.YoutubeURL)
 	}()
 
-	for {
-		select {
-		case <-broadcast.ctx.Done():
-			log.Printf("Broadcast context done, stopping broadcast loop; youtubeURL=%s\n", broadcast.YoutubeURL)
-			return nil
-		case frame, ok := <-broadcast.frameChan:
-			if !ok {
-				log.Printf("Frame channel closed, stopping broadcast loop; youtubeURL=%s\n", broadcast.YoutubeURL)
-				return nil
-			}
-
-			// Encode frame to JPEG
-			frameBuf, err := gocv.IMEncode(".jpg", *frame)
-			if err != nil {
-				log.Printf("Error encoding frame to JPEG; youtubeURL=%s, error=%v", broadcast.YoutubeURL, err)
-				frame.Close()
-				continue
-			}
-
-			// Send frame to all clients
-			clientMutex.RLock()
-			for addrStr, addr := range clients {
-				sendBufferSize := 65000
-				data := frameBuf.GetBytes()
-
-				if len(data) > sendBufferSize {
-					log.Printf("Frame data too large to send to client; youtubeURL=%s, client=%s, dataSize=%d", broadcast.YoutubeURL, addrStr, len(data))
-					continue
-				}
-
-				_, err := broadcast.conn.WriteToUDP(data, addr)
-				if err != nil {
-					log.Printf("Error sending frame to client; youtubeURL=%s, client=%s, error=%v", broadcast.YoutubeURL, addrStr, err)
-					continue
-				}
-				log.Printf("Frame sent to client; youtubeURL=%s, client=%s, dataSize=%d", broadcast.YoutubeURL, addrStr, len(data))
-			}
-			clientMutex.RUnlock()
-
-			frameBuf.Close()
-			frame.Close()
-		}
-	}
+	// Wait for context cancellation
+	<-broadcast.ctx.Done()
+	log.Printf("Stopped broadcast for %s on port %d", broadcast.YoutubeURL, broadcast.Port)
+	return nil
 }
 
 func (b *BroadcastService) StartBroadcast(youtubeURL string) error {
@@ -173,20 +132,11 @@ func (b *BroadcastService) StartBroadcast(youtubeURL string) error {
 		return fmt.Errorf("start broadcast failed to get frame channel: %w", err)
 	}
 
-	addr := &net.UDPAddr{
-		IP:   net.IPv4(0, 0, 0, 0),
-		Port: port,
-	}
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		return fmt.Errorf("start broadcast failed to listen on port: %w", err)
-	}
-
+	// Note: We don't create a UDP listener here since ffmpeg handles UDP sending
 	ctx, cancel := context.WithCancel(context.Background())
 	broadcast := &Broadcast{
 		YoutubeURL: youtubeURL,
 		Port:       port,
-		conn:       conn,
 		cancel:     cancel,
 		ctx:        ctx,
 		frameChan:  frameChan,

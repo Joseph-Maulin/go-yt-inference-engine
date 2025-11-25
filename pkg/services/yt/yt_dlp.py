@@ -1,3 +1,4 @@
+import sys
 import yt_dlp
 
 
@@ -7,5 +8,9 @@ def get_stream_url(url: str) -> str:
         return result['formats'][0]['url']
 
 if __name__ == "__main__":
-    yt_url = "https://www.youtube.com/watch?v=XDThHUawq6E"
+    if len(sys.argv) < 2:
+        print("Usage: python yt_dlp.py <youtube_url>", file=sys.stderr)
+        sys.exit(1)
+    
+    yt_url = sys.argv[1]
     print(get_stream_url(yt_url))
