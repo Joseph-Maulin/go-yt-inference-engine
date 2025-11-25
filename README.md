@@ -1,5 +1,8 @@
 # go-yt-inference-engine
 
+**Version:** 0.0.1  
+**Status:** Development in Progress
+
 Connect to youtube streams and run onnxruntime inference
 
 ## Requirements
