@@ -42,22 +42,30 @@ func (b *BroadcastService) getNextPort() (int, error) {
 		return 0, fmt.Errorf("maximum number of broadcasts reached")
 	}
 
+	// Build a map of already-allocated ports
+	usedPorts := make(map[int]bool)
+	for _, broadcast := range b.broadcasts {
+		usedPorts[broadcast.Port] = true
+	}
+
 	// Find available port in range starting from port
-	portFound := false
 	var port int
 	for port = startingBroadcastPort; port < startingBroadcastPort+maximumBroadcastStreams; port++ {
+		// Skip already allocated ports
+		if usedPorts[port] {
+			continue
+		}
+
+		// Test if port is actually free
 		conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
 		if err != nil {
 			continue
 		}
 		conn.Close()
-		portFound = true
-		break
+		return port, nil
 	}
-	if !portFound {
-		return 0, fmt.Errorf("failed to find a free port")
-	}
-	return port, nil
+
+	return 0, fmt.Errorf("failed to find a free port")
 }
 
 func NewBroadcastService(streamService *stream.StreamService) *BroadcastService {
@@ -178,10 +186,18 @@ func (b *BroadcastService) StopAllActiveBroadcasts() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	for _, broadcast := range b.broadcasts {
+	log.Printf("Stopping %d active broadcasts...", len(b.broadcasts))
+
+	for url, broadcast := range b.broadcasts {
+		log.Printf("Cancelling broadcast for %s", url)
 		broadcast.cancel()
 	}
+
+	// Give ffmpeg processes time to exit gracefully
+	time.Sleep(500 * time.Millisecond)
+
 	b.broadcasts = make(map[string]*Broadcast)
+	log.Println("All broadcasts stopped")
 	return nil
 }
 
