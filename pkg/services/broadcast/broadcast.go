@@ -33,6 +33,10 @@ type BroadcastService struct {
 }
 
 // Lock the BroadcastService mutex before calling this function
+// TODO: Use a more efficient port allocation algorithm.
+//
+//		This is a naive implementation that will not scale to a large number of broadcasts.
+//	      Also, a port could be taken up in the range by another process.
 func (b *BroadcastService) getNextPort() (int, error) {
 	if len(b.broadcasts) >= maximumBroadcastStreams+1 {
 		return 0, fmt.Errorf("maximum number of broadcasts reached")
